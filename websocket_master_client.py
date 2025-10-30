@@ -51,10 +51,10 @@ class MasterWebSocketClient:
             print(f"[MASTER WS] 🔗 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(
                 self.server_url,
-                ping_interval=10,      # เร็วขึ้น: ping ทุก 10s (ตรวจเร็วขึ้น)
-                ping_timeout=60,       # เพิ่ม timeout: รอ pong 60s (ให้โอกาส Render wake up)
-                close_timeout=10,
-                open_timeout=60,       # เพิ่ม open timeout เป็น 60s สำหรับ cold start
+                ping_interval=20,      # ลดลงเป็น 20s เพื่อประหยัด bandwidth และให้เวลา server
+                ping_timeout=90,       # เพิ่มเป็น 90s สำหรับ Render cold start
+                close_timeout=15,      # เพิ่มเป็น 15s
+                open_timeout=90,       # เพิ่มเป็น 90s สำหรับ cold start ที่ช้า
                 max_size=10**7,
                 compression=None       # ปิด compression เพื่อความเร็ว
             )
@@ -126,18 +126,32 @@ class MasterWebSocketClient:
     
     async def ping_loop(self):
         """ส่ง ping เพื่อ keep connection alive - ไม่ break เพื่อให้ reconnect ทำงานต่อ"""
+        consecutive_failures = 0
         while True:
             try:
                 if self.connected and self.websocket:
                     try:
-                        await self.websocket.send(json.dumps({
+                        # ส่ง ping แบบมี timeout
+                        ping_task = self.websocket.send(json.dumps({
                             'type': 'ping',
                             'timestamp': time.time()
                         }))
+                        await asyncio.wait_for(ping_task, timeout=10)  # รอ 10s
+                        consecutive_failures = 0  # รีเซ็ตเมื่อสำเร็จ
+                    except asyncio.TimeoutError:
+                        consecutive_failures += 1
+                        print(f"[MASTER WS] ⚠️ Ping timeout (attempt {consecutive_failures}/3)")
+                        if consecutive_failures >= 3:
+                            print(f"[MASTER WS] ❌ Too many ping failures, disconnecting...")
+                            self.connected = False
+                            consecutive_failures = 0
                     except Exception as send_error:
-                        print(f"[MASTER WS] ⚠️ Ping send failed: {send_error}")
-                        self.connected = False
-                await asyncio.sleep(15)  # ping ทุก 15 วินาที
+                        consecutive_failures += 1
+                        print(f"[MASTER WS] ⚠️ Ping send failed: {send_error} (attempt {consecutive_failures}/3)")
+                        if consecutive_failures >= 3:
+                            self.connected = False
+                            consecutive_failures = 0
+                await asyncio.sleep(25)  # เพิ่มเป็น 25s เพื่อให้ server พักได้
             except Exception as e:
                 print(f"[MASTER WS] ⚠️ Ping loop error: {e}")
                 await asyncio.sleep(5)  # รอแล้วลองใหม่
