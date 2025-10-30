@@ -10,6 +10,7 @@ import websockets
 import json
 import time
 import threading
+import aiohttp
 from typing import Callable, Dict, Any
 
 class FollowerWebSocketClient:
@@ -29,14 +30,44 @@ class FollowerWebSocketClient:
         }
         self.latencies = []
         
+    async def wake_server(self):
+        """Wake up Render server ถ้า cold start (HTTP health check)"""
+        try:
+            # Render ใช้ WebSocket port เดียวกันสำหรับ HTTP health check
+            # แค่เปลี่ยน wss:// เป็น https://
+            health_url = self.server_url.replace('wss://', 'https://').replace('ws://', 'http://')
+            # Remove port ถ้ามี (Render ใช้ standard port 443/80)
+            if 'render.com' in health_url:
+                health_url = health_url.split(':')[0] + '://' + health_url.split('://')[1].split(':')[0]
+            health_url = health_url.rstrip('/') + '/health'
+            
+            print(f"[FOLLOWER WS] 🔔 Waking server via {health_url}...")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        print(f"[FOLLOWER WS] ✅ Server is awake - {data.get('followers', 0)} followers online")
+                        return True
+        except Exception as e:
+            print(f"[FOLLOWER WS] ⚠️ Wake attempt failed (server may be starting...): {e}")
+        return False
+    
     async def connect(self):
         """เชื่อมต่อไปยัง WebSocket server"""
+        # ลอง wake server ก่อน (สำหรับ Render cold start)
+        if 'render.com' in self.server_url:
+            await self.wake_server()
+            await asyncio.sleep(2)  # รอ server boot
+        
         try:
             print(f"[FOLLOWER WS] 🔗 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(
                 self.server_url,
-                ping_interval=30,
-                ping_timeout=10
+                ping_interval=20,      # เร็วขึ้น: ping ทุก 20s
+                ping_timeout=30,       # เพิ่ม timeout: รอ pong 30s
+                close_timeout=10,      # เพิ่ม close timeout
+                open_timeout=30,
+                max_size=10**7         # เพิ่ม max message size
             )
             self.connected = True
             
@@ -124,8 +155,10 @@ class FollowerWebSocketClient:
                         'type': 'ping',
                         'timestamp': time.time()
                     }))
-                await asyncio.sleep(30)
-            except:
+                await asyncio.sleep(15)  # ping ทุก 15 วินาที (เร็วขึ้น)
+            except Exception as e:
+                print(f"[FOLLOWER WS] ⚠️ Ping failed: {e}")
+                self.connected = False
                 break
     
     async def reconnect_loop(self):
@@ -137,16 +170,20 @@ class FollowerWebSocketClient:
                 
                 success = await self.connect()
                 if success:
+                    print(f"[FOLLOWER WS] ✅ Reconnected successfully!")
+                    self.reconnect_delay = 5  # รีเซ็ต delay
                     # เริ่ม listen ใหม่
                     asyncio.create_task(self.listen_for_signals())
                 else:
-                    # เพิ่ม delay
+                    # เพิ่ม delay แบบ exponential backoff
+                    old_delay = self.reconnect_delay
                     self.reconnect_delay = min(
-                        self.reconnect_delay * 2,
+                        self.reconnect_delay * 1.5,  # เพิ่มแค่ 1.5 เท่า
                         self.max_reconnect_delay
                     )
+                    print(f"[FOLLOWER WS] ⚠️ Reconnect failed, next attempt in {self.reconnect_delay:.0f}s")
             else:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)  # check ทุก 3s (เร็วขึ้น)
     
     async def start(self):
         """เริ่มต้น client"""
