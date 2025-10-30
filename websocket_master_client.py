@@ -10,6 +10,7 @@ import websockets
 import json
 import time
 import threading
+import aiohttp
 from typing import Dict, Any
 
 class MasterWebSocketClient:
@@ -21,14 +22,40 @@ class MasterWebSocketClient:
         self.reconnect_delay = 5
         self.max_reconnect_delay = 60
         
+    async def wake_server(self):
+        """Wake up Render server ถ้า cold start"""
+        try:
+            health_url = self.server_url.replace('wss://', 'https://').replace('ws://', 'http://')
+            if 'render.com' in health_url:
+                health_url = health_url.split(':')[0] + '://' + health_url.split('://')[1].split(':')[0]
+            health_url = health_url.rstrip('/') + '/health'
+            
+            print(f"[MASTER WS] 🔔 Waking server...")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        print(f"[MASTER WS] ✅ Server is awake")
+                        return True
+        except Exception as e:
+            print(f"[MASTER WS] ⚠️ Wake attempt failed: {e}")
+        return False
+    
     async def connect(self):
         """เชื่อมต่อไปยัง WebSocket server"""
+        # Wake server ก่อนถ้าเป็น Render
+        if 'render.com' in self.server_url:
+            await self.wake_server()
+            await asyncio.sleep(2)
+        
         try:
             print(f"[MASTER WS] 🔗 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(
                 self.server_url,
-                ping_interval=30,
-                ping_timeout=10
+                ping_interval=20,      # เร็วขึ้น: ping ทุก 20s
+                ping_timeout=30,       # เพิ่ม timeout: รอ pong 30s
+                close_timeout=10,      # เพิ่ม close timeout
+                open_timeout=30,
+                max_size=10**7         # เพิ่ม max message size
             )
             self.connected = True
             
@@ -55,9 +82,16 @@ class MasterWebSocketClient:
             return False
     
     async def send_signal(self, signal_data: Dict[str, Any]):
-        """ส่งสัญญาณไปยัง followers"""
+        """ส่งสัญญาณไปยัง followers with auto-reconnect"""
+        # ถ้า disconnected ให้ reconnect ก่อน (max 2 attempts)
+        for attempt in range(2):
+            if not self.connected or not self.websocket:
+                print(f"[MASTER WS] 🔄 Auto-reconnecting before send (attempt {attempt+1}/2)...")
+                await self.connect()
+                await asyncio.sleep(1)
+        
         if not self.connected or not self.websocket:
-            print(f"[MASTER WS] ⚠️ Not connected, cannot send signal")
+            print(f"[MASTER WS] ❌ Cannot send signal - still disconnected after reconnect attempts")
             return False
         
         try:
@@ -77,6 +111,16 @@ class MasterWebSocketClient:
         except Exception as e:
             print(f"[MASTER WS] ❌ Send error: {e}")
             self.connected = False
+            # ลอง reconnect และส่งอีกครั้ง
+            print(f"[MASTER WS] 🔄 Retrying send after reconnect...")
+            await self.connect()
+            if self.connected:
+                try:
+                    await self.websocket.send(json.dumps(signal_data))
+                    print(f"[MASTER WS] ✅ Signal sent successfully after retry")
+                    return True
+                except:
+                    pass
             return False
     
     async def ping_loop(self):
@@ -88,8 +132,10 @@ class MasterWebSocketClient:
                         'type': 'ping',
                         'timestamp': time.time()
                     }))
-                await asyncio.sleep(30)  # ping ทุก 30 วินาที
-            except:
+                await asyncio.sleep(15)  # ping ทุก 15 วินาที (เร็วขึ้น)
+            except Exception as e:
+                print(f"[MASTER WS] ⚠️ Ping failed: {e}")
+                self.connected = False
                 break
     
     async def reconnect_loop(self):
@@ -100,14 +146,19 @@ class MasterWebSocketClient:
                 await asyncio.sleep(self.reconnect_delay)
                 
                 success = await self.connect()
-                if not success:
+                if success:
+                    print(f"[MASTER WS] ✅ Reconnected successfully!")
+                    self.reconnect_delay = 5  # รีเซ็ต delay
+                else:
                     # เพิ่ม delay แบบ exponential backoff
+                    old_delay = self.reconnect_delay
                     self.reconnect_delay = min(
-                        self.reconnect_delay * 2,
+                        self.reconnect_delay * 1.5,  # เพิ่มแค่ 1.5 เท่า (ไม่ใช่ 2)
                         self.max_reconnect_delay
                     )
+                    print(f"[MASTER WS] ⚠️ Reconnect failed, next attempt in {self.reconnect_delay:.0f}s")
             else:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)  # check ทุก 3s (เร็วขึ้น)
     
     async def start(self):
         """เริ่มต้น client"""
