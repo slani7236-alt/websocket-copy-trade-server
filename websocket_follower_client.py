@@ -32,15 +32,10 @@ class FollowerWebSocketClient:
     
     @property
     def is_connected(self):
-        """Check if truly connected"""
-        if not self.connected:
-            return False
-        if not self.websocket:
-            return False
-        if getattr(self.websocket, 'closed', True):
-            self.connected = False
-            return False
-        return True
+        """Check if connected (อย่าตรวจสอบ closed state ที่นี่)"""
+        # เพียงแค่ return self.connected flag
+        # ปล่อยให้ ping_loop จัดการตรวจสอบ connection health
+        return self.connected and self.websocket is not None
         
     async def wake_server(self):
         """Wake up Render server ถ้า cold start (HTTP health check)"""
