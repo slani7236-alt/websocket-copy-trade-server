@@ -1,3 +1,10 @@
+"""
+📥 WebSocket Client สำหรับ Follower Bot
+- เชื่อมต่อไปยัง WebSocket Server
+- รับสัญญาณแบบ real-time
+- Execute trade ทันที
+"""
+
 import asyncio
 import websockets
 import json
@@ -30,7 +37,7 @@ class FollowerWebSocketClient:
             return False
         if not self.websocket:
             return False
-        if self.websocket.closed:
+        if getattr(self.websocket, 'closed', True):
             self.connected = False
             return False
         return True
@@ -158,41 +165,48 @@ class FollowerWebSocketClient:
             try:
                 if self.connected and self.websocket:
                     try:
-                        if self.websocket.closed:
+                        if getattr(self.websocket, 'closed', True):
+                            print(f"[FOLLOWER WS] 🔌 WebSocket closed detected")
                             self.connected = False
                             consecutive_failures = 0
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(5)
                             continue
                         
                         # ใช้ built-in ping
                         ping_task = self.websocket.ping()
-                        await asyncio.wait_for(ping_task, timeout=5)
+                        await asyncio.wait_for(ping_task, timeout=10)  # เพิ่ม timeout เป็น 10s
                         
                         consecutive_failures = 0
                         last_success_time = time.time()
                         
                     except asyncio.TimeoutError:
                         consecutive_failures += 1
-                        if consecutive_failures >= 2:
+                        print(f"[FOLLOWER WS] ⚠️ Ping timeout ({consecutive_failures}/3)")
+                        if consecutive_failures >= 3:  # เพิ่มเป็น 3 ครั้งก่อนตัดการเชื่อมต่อ
+                            print(f"[FOLLOWER WS] 🔴 Connection appears dead")
                             self.connected = False
                             consecutive_failures = 0
                             
-                    except Exception:
+                    except Exception as e:
                         consecutive_failures += 1
-                        if consecutive_failures >= 2:
+                        print(f"[FOLLOWER WS] ⚠️ Ping error ({consecutive_failures}/3): {e}")
+                        if consecutive_failures >= 3:  # เพิ่มเป็น 3 ครั้งก่อนตัดการเชื่อมต่อ
+                            print(f"[FOLLOWER WS] 🔴 Connection appears dead")
                             self.connected = False
                             consecutive_failures = 0
                     
-                    # Check no ping success for 60s
-                    if time.time() - last_success_time > 60:
+                    # Check no ping success for 90s (เพิ่มจาก 60s)
+                    if time.time() - last_success_time > 90:
+                        print(f"[FOLLOWER WS] 🔴 No successful ping for 90s")
                         self.connected = False
                         consecutive_failures = 0
                         
-                await asyncio.sleep(15)  # Ping ทุก 15 วินาที
+                await asyncio.sleep(20)  # Ping ทุก 20 วินาที (ลดความถี่)
                 
-            except Exception:
+            except Exception as e:
+                print(f"[FOLLOWER WS] ❌ Ping loop error: {e}")
                 self.connected = False
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
     
     async def reconnect_loop(self):
         """Auto-reconnect เมื่อ disconnect"""
@@ -205,7 +219,7 @@ class FollowerWebSocketClient:
                     
                     try:
                         # Close old connection
-                        if self.websocket and not self.websocket.closed:
+                        if self.websocket and not getattr(self.websocket, 'closed', True):
                             try:
                                 await self.websocket.close()
                             except:
@@ -226,7 +240,7 @@ class FollowerWebSocketClient:
                     await asyncio.sleep(2)
                     
                     # Check websocket health
-                    if self.websocket and self.websocket.closed:
+                    if self.websocket and getattr(self.websocket, 'closed', True):
                         self.connected = False
                         
             except Exception:
