@@ -30,29 +30,43 @@ class MasterWebSocketClient:
         return self.connected and self.websocket is not None
         
     async def wake_server(self):
-        """Wake up Render server ถ้า cold start"""
+        """Wake up Render server ถ้า cold start (HTTP health check)"""
         try:
             health_url = self.server_url.replace('wss://', 'https://').replace('ws://', 'http://')
             if 'render.com' in health_url:
                 health_url = health_url.split(':')[0] + '://' + health_url.split('://')[1].split(':')[0]
             health_url = health_url.rstrip('/') + '/health'
             
-            print(f"[MASTER WS] 🔔 Waking server...")
+            print(f"[MASTER WS] 🔔 Waking server via {health_url}...")
             async with aiohttp.ClientSession() as session:
-                async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                # ⚡ เพิ่ม timeout เป็น 60s สำหรับ cold start
+                async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status == 200:
-                        print(f"[MASTER WS] ✅ Server is awake")
+                        data = await resp.json()
+                        print(f"[MASTER WS] ✅ Server is awake - {data.get('status', 'unknown')}")
                         return True
+                    else:
+                        print(f"[MASTER WS] ⚠️ Server responded with status {resp.status}")
+                        return False
+        except asyncio.TimeoutError:
+            print(f"[MASTER WS] ⏰ Wake timeout - server may still be starting...")
+            return False
         except Exception as e:
-            print(f"[MASTER WS] ⚠️ Wake attempt failed: {e}")
+            print(f"[MASTER WS] ⚠️ Wake error: {e}")
         return False
     
     async def connect(self):
         """เชื่อมต่อไปยัง WebSocket server"""
         # Wake server ก่อนถ้าเป็น Render
         if 'render.com' in self.server_url:
-            await self.wake_server()
-            await asyncio.sleep(2)
+            print(f"[MASTER WS] 💤 Server may be sleeping, waking up...")
+            wake_success = await self.wake_server()
+            if wake_success:
+                print(f"[MASTER WS] ⏳ Waiting 10s for server to fully start...")
+                await asyncio.sleep(10)  # เพิ่มเป็น 10s เพื่อให้ server boot เสร็จ
+            else:
+                print(f"[MASTER WS] ⏳ Server starting (cold start may take 30-60s)...")
+                await asyncio.sleep(15)  # รอนานขึ้นถ้า wake ไม่สำเร็จ
         
         try:
             print(f"[MASTER WS] 🔗 Connecting to {self.server_url}...")
