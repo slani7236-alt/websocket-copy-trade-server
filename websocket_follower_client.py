@@ -124,20 +124,17 @@ class FollowerWebSocketClient:
                     
                     self.stats['signals_received'] += 1
                     
-                    # ⚡ Compact log สำหรับ burst signals
-                    print(f"[FOLLOWER WS] ⚡ #{self.stats['signals_received']}: {data.get('asset')} {data.get('direction')} ({latency:.0f}ms)")
+                    # ⚡ ULTRA FAST: Minimal log
+                    print(f"[⚡] #{self.stats['signals_received']}: {data.get('asset')} {data.get('direction')}")
                     
                     # Execute callback
                     if self.on_signal_callback:
-                        print(f"[FOLLOWER WS] 🔄 Executing callback...")
                         try:
                             success = self.on_signal_callback(data)
                             if success:
                                 self.stats['signals_executed'] += 1
-                                print(f"[FOLLOWER WS] ✅ Callback success! (Total executed: {self.stats['signals_executed']})")
                             else:
                                 self.stats['signals_failed'] += 1
-                                print(f"[FOLLOWER WS] ❌ Callback failed! (Total failed: {self.stats['signals_failed']})")
                         except Exception as e:
                             self.stats['signals_failed'] += 1
                             print(f"[FOLLOWER WS] ❌ Callback exception: {e}")
