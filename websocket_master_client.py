@@ -1,3 +1,10 @@
+"""
+📦 WebSocket Client สำหรับ Master Bot
+- เชื่อมต่อไปยัง WebSocket Server
+- ส่งสัญญาณเมื่อตรวจจับ order ใหม่
+- Auto-reconnect
+"""
+
 import asyncio
 import websockets
 import json
@@ -22,7 +29,7 @@ class MasterWebSocketClient:
             return False
         if not self.websocket:
             return False
-        if self.websocket.closed:
+        if getattr(self.websocket, 'closed', True):
             self.connected = False
             return False
         return True
@@ -139,7 +146,7 @@ class MasterWebSocketClient:
                 if self.connected and self.websocket:
                     try:
                         # ตรวจสอบว่า websocket ยังเปิดอยู่หรือไม่
-                        if self.websocket.closed:
+                        if getattr(self.websocket, 'closed', True):
                             print(f"[MASTER WS] ⚠️ WebSocket closed, marking disconnected")
                             self.connected = False
                             consecutive_failures = 0
@@ -192,7 +199,7 @@ class MasterWebSocketClient:
                     
                     try:
                         # Close old connection ถ้ามี
-                        if self.websocket and not self.websocket.closed:
+                        if self.websocket and not getattr(self.websocket, 'closed', True):
                             try:
                                 await self.websocket.close()
                             except:
@@ -213,7 +220,7 @@ class MasterWebSocketClient:
                     await asyncio.sleep(2)
                     
                     # ตรวจสอบว่า websocket ยังใช้งานได้
-                    if self.websocket and self.websocket.closed:
+                    if self.websocket and getattr(self.websocket, 'closed', True):
                         print(f"[MASTER] WebSocket closed unexpectedly")
                         self.connected = False
                         
