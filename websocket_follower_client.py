@@ -174,16 +174,9 @@ class FollowerWebSocketClient:
             try:
                 if self.connected and self.websocket:
                     try:
-                        if getattr(self.websocket, 'closed', True):
-                            print(f"[FOLLOWER WS] 🔌 WebSocket closed detected")
-                            self.connected = False
-                            consecutive_failures = 0
-                            await asyncio.sleep(5)
-                            continue
-                        
-                        # ใช้ built-in ping
+                        # ไม่ตรวจสอบ closed ก่อน - ปล่อยให้ exception จัดการ
                         ping_task = self.websocket.ping()
-                        await asyncio.wait_for(ping_task, timeout=10)  # เพิ่ม timeout เป็น 10s
+                        await asyncio.wait_for(ping_task, timeout=10)  # timeout 10s
                         
                         consecutive_failures = 0
                         last_success_time = time.time()
@@ -191,26 +184,31 @@ class FollowerWebSocketClient:
                     except asyncio.TimeoutError:
                         consecutive_failures += 1
                         print(f"[FOLLOWER WS] ⚠️ Ping timeout ({consecutive_failures}/3)")
-                        if consecutive_failures >= 3:  # เพิ่มเป็น 3 ครั้งก่อนตัดการเชื่อมต่อ
-                            print(f"[FOLLOWER WS] 🔴 Connection appears dead")
-                            self.connected = False
-                            consecutive_failures = 0
-                            
-                    except Exception as e:
-                        consecutive_failures += 1
-                        print(f"[FOLLOWER WS] ⚠️ Ping error ({consecutive_failures}/3): {e}")
-                        if consecutive_failures >= 3:  # เพิ่มเป็น 3 ครั้งก่อนตัดการเชื่อมต่อ
+                        if consecutive_failures >= 3:
                             print(f"[FOLLOWER WS] 🔴 Connection appears dead")
                             self.connected = False
                             consecutive_failures = 0
                     
-                    # Check no ping success for 90s (เพิ่มจาก 60s)
+                    except websockets.exceptions.ConnectionClosed:
+                        print(f"[FOLLOWER WS] 🔌 Connection closed during ping")
+                        self.connected = False
+                        consecutive_failures = 0
+                            
+                    except Exception as e:
+                        consecutive_failures += 1
+                        print(f"[FOLLOWER WS] ⚠️ Ping error ({consecutive_failures}/3): {e}")
+                        if consecutive_failures >= 3:
+                            print(f"[FOLLOWER WS] 🔴 Connection appears dead")
+                            self.connected = False
+                            consecutive_failures = 0
+                    
+                    # Check no ping success for 90s
                     if time.time() - last_success_time > 90:
                         print(f"[FOLLOWER WS] 🔴 No successful ping for 90s")
                         self.connected = False
                         consecutive_failures = 0
                         
-                await asyncio.sleep(20)  # Ping ทุก 20 วินาที (ลดความถี่)
+                await asyncio.sleep(20)  # Ping ทุก 20 วินาที
                 
             except Exception as e:
                 print(f"[FOLLOWER WS] ❌ Ping loop error: {e}")
@@ -227,8 +225,8 @@ class FollowerWebSocketClient:
                     await asyncio.sleep(wait_time)
                     
                     try:
-                        # Close old connection
-                        if self.websocket and not getattr(self.websocket, 'closed', True):
+                        # Close old connection ถ้ามี
+                        if self.websocket:
                             try:
                                 await self.websocket.close()
                             except:
@@ -248,13 +246,9 @@ class FollowerWebSocketClient:
                         self.reconnect_delay = min(self.reconnect_delay * 1.5, 30)
                         print(f"[FOLLOWER] ❌ Reconnect error: {e}, next retry in {self.reconnect_delay:.0f}s")
                 else:
-                    # เพิ่ม delay เมื่อ connected เพื่อลดการตรวจสอบบ่อยเกินไป
+                    # เพิ่ม delay เมื่อ connected เพื่อลดการตรวจสอบ
                     await asyncio.sleep(10)
-                    
-                    # Check websocket health แต่อย่าตั้ง False บ่อยเกินไป
-                    if self.websocket and getattr(self.websocket, 'closed', True):
-                        print(f"[FOLLOWER] 🔌 WebSocket closed detected in reconnect_loop")
-                        self.connected = False
+                    # ไม่ตรวจสอบ closed ที่นี่ - ปล่อยให้ ping_loop จัดการ
                         
             except Exception as e:
                 print(f"[FOLLOWER] ❌ Reconnect loop error: {e}")
