@@ -70,12 +70,13 @@ class FollowerWebSocketClient:
             print(f"[FOLLOWER WS] 🔗 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(
                 self.server_url,
-                ping_interval=10,      # เร็วขึ้น: ping ทุก 10s (ตรวจเร็วขึ้น)
-                ping_timeout=60,       # เพิ่ม timeout: รอ pong 60s (ให้โอกาส Render wake up)
-                close_timeout=10,
+                ping_interval=20,      # ⚡ ปรับเป็น 20s (ลด overhead)
+                ping_timeout=60,       # รอ pong 60s
+                close_timeout=5,       # ⚡ ลดเป็น 5s (ปิดเร็ว)
                 open_timeout=60,       # เพิ่ม open timeout เป็น 60s สำหรับ cold start
                 max_size=10**7,
-                compression=None       # ปิด compression เพื่อความเร็ว
+                compression=None,      # ปิด compression เพื่อความเร็ว
+                max_queue=1            # ⚡ จำกัด queue = รับทันที
             )
             self.connected = True
             
