@@ -1,10 +1,3 @@
-"""
-📦 WebSocket Client สำหรับ Master Bot
-- เชื่อมต่อไปยัง WebSocket Server
-- ส่งสัญญาณเมื่อตรวจจับ order ใหม่
-- Auto-reconnect
-"""
-
 import asyncio
 import websockets
 import json
@@ -19,8 +12,20 @@ class MasterWebSocketClient:
         self.websocket = None
         self.connected = False
         self.loop = None
-        self.reconnect_delay = 5
-        self.max_reconnect_delay = 60
+        self.reconnect_delay = 3  # เริ่มที่ 3s สำหรับ Master (สำคัญ)
+        self.max_reconnect_delay = 10  # Max 10s สำหรับ Master
+    
+    @property
+    def is_connected(self):
+        """Check if truly connected"""
+        if not self.connected:
+            return False
+        if not self.websocket:
+            return False
+        if self.websocket.closed:
+            self.connected = False
+            return False
+        return True
         
     async def wake_server(self):
         """Wake up Render server ถ้า cold start"""
@@ -125,66 +130,96 @@ class MasterWebSocketClient:
             return False
     
     async def ping_loop(self):
-        """ส่ง ping เพื่อ keep connection alive - ไม่ break เพื่อให้ reconnect ทำงานต่อ"""
+        """ส่ง ping เพื่อ keep connection alive แบบ aggressive"""
         consecutive_failures = 0
+        last_success_time = time.time()
+        
         while True:
             try:
                 if self.connected and self.websocket:
                     try:
-                        # ส่ง ping แบบมี timeout
-                        ping_task = self.websocket.send(json.dumps({
-                            'type': 'ping',
-                            'timestamp': time.time()
-                        }))
-                        await asyncio.wait_for(ping_task, timeout=10)  # รอ 10s
-                        consecutive_failures = 0  # รีเซ็ตเมื่อสำเร็จ
+                        # ตรวจสอบว่า websocket ยังเปิดอยู่หรือไม่
+                        if self.websocket.closed:
+                            print(f"[MASTER WS] ⚠️ WebSocket closed, marking disconnected")
+                            self.connected = False
+                            consecutive_failures = 0
+                            await asyncio.sleep(2)
+                            continue
+                        
+                        # ส่ง ping ด้วย timeout สั้น
+                        ping_task = self.websocket.ping()  # ใช้ built-in ping
+                        await asyncio.wait_for(ping_task, timeout=5)
+                        
+                        # Success
+                        consecutive_failures = 0
+                        last_success_time = time.time()
+                        
                     except asyncio.TimeoutError:
                         consecutive_failures += 1
-                        print(f"[MASTER WS] ⚠️ Ping timeout (attempt {consecutive_failures}/3)")
-                        if consecutive_failures >= 3:
-                            print(f"[MASTER WS] ❌ Too many ping failures, disconnecting...")
+                        print(f"[MASTER] Ping timeout ({consecutive_failures}/2)")
+                        if consecutive_failures >= 2:
                             self.connected = False
                             consecutive_failures = 0
+                            
                     except Exception as send_error:
                         consecutive_failures += 1
-                        print(f"[MASTER WS] ⚠️ Ping send failed: {send_error} (attempt {consecutive_failures}/3)")
-                        if consecutive_failures >= 3:
+                        if consecutive_failures >= 2:
                             self.connected = False
                             consecutive_failures = 0
-                await asyncio.sleep(25)  # เพิ่มเป็น 25s เพื่อให้ server พักได้
+                    
+                    # ตรวจสอบว่านานเกิน 60s ไม่ได้ ping สำเร็จ
+                    if time.time() - last_success_time > 60:
+                        print(f"[MASTER] No successful ping for 60s, reconnecting...")
+                        self.connected = False
+                        consecutive_failures = 0
+                        
+                await asyncio.sleep(15)  # Ping ทุก 15 วินาที (aggressive)
+                
             except Exception as e:
-                print(f"[MASTER WS] ⚠️ Ping loop error: {e}")
-                await asyncio.sleep(5)  # รอแล้วลองใหม่
-                # ไม่ break เพื่อให้ loop ทำงานต่อ
+                print(f"[MASTER] Ping error: {e}")
+                self.connected = False
+                await asyncio.sleep(3)
     
     async def reconnect_loop(self):
-        """Auto-reconnect เมื่อ disconnect - loop ไม่หยุด"""
+        """Auto-reconnect เมื่อ disconnect - aggressive สำหรับ Master"""
         while True:
             try:
                 if not self.connected:
-                    print(f"[MASTER WS] 🔄 Reconnecting in {self.reconnect_delay}s...")
-                    await asyncio.sleep(self.reconnect_delay)
+                    # Master สำคัญ - reconnect เร็วขึ้น
+                    wait_time = min(self.reconnect_delay, 10)  # Max 10s
+                    print(f"[MASTER] Reconnecting in {wait_time:.0f}s...")
+                    await asyncio.sleep(wait_time)
                     
                     try:
+                        # Close old connection ถ้ามี
+                        if self.websocket and not self.websocket.closed:
+                            try:
+                                await self.websocket.close()
+                            except:
+                                pass
+                        
                         success = await self.connect()
                         if success:
-                            print(f"[MASTER WS] ✅ Reconnected successfully!")
-                            self.reconnect_delay = 5  # รีเซ็ต delay
+                            print(f"[MASTER] ✅ Reconnected!")
+                            self.reconnect_delay = 3  # รีเซ็ตเป็น 3s สำหรับ Master
                         else:
-                            # เพิ่ม delay แบบ exponential backoff
-                            self.reconnect_delay = min(
-                                self.reconnect_delay * 1.5,
-                                self.max_reconnect_delay
-                            )
-                            print(f"[MASTER WS] ⚠️ Reconnect failed, retry in {self.reconnect_delay:.0f}s")
+                            # เพิ่ม delay แต่ไม่เกิน 10s สำหรับ Master
+                            self.reconnect_delay = min(self.reconnect_delay * 1.2, 10)
+                            
                     except Exception as connect_error:
-                        print(f"[MASTER WS] ❌ Reconnect error: {connect_error}")
-                        self.reconnect_delay = min(self.reconnect_delay * 1.5, self.max_reconnect_delay)
+                        self.reconnect_delay = min(self.reconnect_delay * 1.2, 10)
                 else:
-                    await asyncio.sleep(3)  # check ทุก 3s
+                    # ตรวจสอบ connection health
+                    await asyncio.sleep(2)
+                    
+                    # ตรวจสอบว่า websocket ยังใช้งานได้
+                    if self.websocket and self.websocket.closed:
+                        print(f"[MASTER] WebSocket closed unexpectedly")
+                        self.connected = False
+                        
             except Exception as e:
-                print(f"[MASTER WS] ⚠️ Reconnect loop error: {e}")
-                await asyncio.sleep(5)
+                print(f"[MASTER] Reconnect error: {e}")
+                await asyncio.sleep(3)
     
     async def start(self):
         """เริ่มต้น client"""
