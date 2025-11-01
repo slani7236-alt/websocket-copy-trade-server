@@ -1,10 +1,3 @@
-"""
-📥 WebSocket Client สำหรับ Follower Bot
-- เชื่อมต่อไปยัง WebSocket Server
-- รับสัญญาณแบบ real-time
-- Execute trade ทันที
-"""
-
 import asyncio
 import websockets
 import json
@@ -21,7 +14,7 @@ class FollowerWebSocketClient:
         self.loop = None
         self.on_signal_callback = on_signal_callback
         self.reconnect_delay = 5
-        self.max_reconnect_delay = 60
+        self.max_reconnect_delay = 30  # ลดลงเป็น 30s
         self.stats = {
             'signals_received': 0,
             'signals_executed': 0,
@@ -29,6 +22,18 @@ class FollowerWebSocketClient:
             'avg_latency': 0
         }
         self.latencies = []
+    
+    @property
+    def is_connected(self):
+        """Check if truly connected"""
+        if not self.connected:
+            return False
+        if not self.websocket:
+            return False
+        if self.websocket.closed:
+            self.connected = False
+            return False
+        return True
         
     async def wake_server(self):
         """Wake up Render server ถ้า cold start (HTTP health check)"""
@@ -115,8 +120,7 @@ class FollowerWebSocketClient:
                     
                     self.stats['signals_received'] += 1
                     
-                    print(f"[FOLLOWER WS] ⚡ Signal received (latency: {latency:.0f}ms)")
-                    print(f"[FOLLOWER WS] 📊 {data.get('asset')} {data.get('direction')} ${data.get('amount')}")
+                    print(f"[FOLLOWER WS] ⚡ {data.get('asset')} {data.get('direction')} (lat:{latency:.0f}ms)")
                     
                     # Execute callback
                     if self.on_signal_callback:
@@ -124,13 +128,11 @@ class FollowerWebSocketClient:
                             success = self.on_signal_callback(data)
                             if success:
                                 self.stats['signals_executed'] += 1
-                                print(f"[FOLLOWER WS] ✅ Trade executed")
                             else:
                                 self.stats['signals_failed'] += 1
-                                print(f"[FOLLOWER WS] ❌ Trade failed")
                         except Exception as e:
                             self.stats['signals_failed'] += 1
-                            print(f"[FOLLOWER WS] ❌ Callback error: {e}")
+                            print(f"[FOLLOWER WS] ❌ {e}")
                 
                 elif msg_type == 'pong':
                     # Pong response
@@ -148,54 +150,87 @@ class FollowerWebSocketClient:
             self.connected = False
     
     async def ping_loop(self):
-        """ส่ง ping เพื่อ keep connection alive - ไม่ break เพื่อให้ reconnect ทำงานต่อ"""
+        """ส่ง ping เพื่อ keep connection alive"""
+        consecutive_failures = 0
+        last_success_time = time.time()
+        
         while True:
             try:
                 if self.connected and self.websocket:
                     try:
-                        await self.websocket.send(json.dumps({
-                            'type': 'ping',
-                            'timestamp': time.time()
-                        }))
-                    except Exception as send_error:
-                        print(f"[FOLLOWER WS] ⚠️ Ping send failed: {send_error}")
+                        if self.websocket.closed:
+                            self.connected = False
+                            consecutive_failures = 0
+                            await asyncio.sleep(2)
+                            continue
+                        
+                        # ใช้ built-in ping
+                        ping_task = self.websocket.ping()
+                        await asyncio.wait_for(ping_task, timeout=5)
+                        
+                        consecutive_failures = 0
+                        last_success_time = time.time()
+                        
+                    except asyncio.TimeoutError:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 2:
+                            self.connected = False
+                            consecutive_failures = 0
+                            
+                    except Exception:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 2:
+                            self.connected = False
+                            consecutive_failures = 0
+                    
+                    # Check no ping success for 60s
+                    if time.time() - last_success_time > 60:
                         self.connected = False
-                await asyncio.sleep(15)  # ping ทุก 15 วินาที
-            except Exception as e:
-                print(f"[FOLLOWER WS] ⚠️ Ping loop error: {e}")
-                await asyncio.sleep(5)  # รอแล้วลองใหม่
-                # ไม่ break เพื่อให้ loop ทำงานต่อ
+                        consecutive_failures = 0
+                        
+                await asyncio.sleep(15)  # Ping ทุก 15 วินาที
+                
+            except Exception:
+                self.connected = False
+                await asyncio.sleep(3)
     
     async def reconnect_loop(self):
-        """Auto-reconnect เมื่อ disconnect - loop ไม่หยุด"""
+        """Auto-reconnect เมื่อ disconnect"""
         while True:
             try:
                 if not self.connected:
-                    print(f"[FOLLOWER WS] 🔄 Reconnecting in {self.reconnect_delay}s...")
-                    await asyncio.sleep(self.reconnect_delay)
+                    wait_time = min(self.reconnect_delay, 15)  # Max 15s
+                    print(f"[FOLLOWER] Reconnecting in {wait_time:.0f}s...")
+                    await asyncio.sleep(wait_time)
                     
                     try:
+                        # Close old connection
+                        if self.websocket and not self.websocket.closed:
+                            try:
+                                await self.websocket.close()
+                            except:
+                                pass
+                        
                         success = await self.connect()
                         if success:
-                            print(f"[FOLLOWER WS] ✅ Reconnected successfully!")
-                            self.reconnect_delay = 5  # รีเซ็ต delay
+                            print(f"[FOLLOWER] ✅ Reconnected!")
+                            self.reconnect_delay = 5
                             # เริ่ม listen ใหม่
                             asyncio.create_task(self.listen_for_signals())
                         else:
-                            # เพิ่ม delay แบบ exponential backoff
-                            self.reconnect_delay = min(
-                                self.reconnect_delay * 1.5,
-                                self.max_reconnect_delay
-                            )
-                            print(f"[FOLLOWER WS] ⚠️ Reconnect failed, retry in {self.reconnect_delay:.0f}s")
-                    except Exception as connect_error:
-                        print(f"[FOLLOWER WS] ❌ Reconnect error: {connect_error}")
-                        self.reconnect_delay = min(self.reconnect_delay * 1.5, self.max_reconnect_delay)
+                            self.reconnect_delay = min(self.reconnect_delay * 1.2, 15)
+                            
+                    except Exception:
+                        self.reconnect_delay = min(self.reconnect_delay * 1.2, 15)
                 else:
-                    await asyncio.sleep(3)  # check ทุก 3s
-            except Exception as e:
-                print(f"[FOLLOWER WS] ⚠️ Reconnect loop error: {e}")
-                await asyncio.sleep(5)
+                    await asyncio.sleep(2)
+                    
+                    # Check websocket health
+                    if self.websocket and self.websocket.closed:
+                        self.connected = False
+                        
+            except Exception:
+                await asyncio.sleep(3)
     
     async def start(self):
         """เริ่มต้น client"""
