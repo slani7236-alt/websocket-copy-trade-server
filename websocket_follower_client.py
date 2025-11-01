@@ -76,7 +76,7 @@ class FollowerWebSocketClient:
                 open_timeout=60,       # เพิ่ม open timeout เป็น 60s สำหรับ cold start
                 max_size=10**7,
                 compression=None,      # ปิด compression เพื่อความเร็ว
-                max_queue=1            # ⚡ จำกัด queue = รับทันที
+                max_queue=32           # ⚡ รองรับ burst (32 messages)
             )
             self.connected = True
             
@@ -124,8 +124,8 @@ class FollowerWebSocketClient:
                     
                     self.stats['signals_received'] += 1
                     
-                    print(f"\n[FOLLOWER WS] ⚡ SIGNAL: {data.get('asset')} {data.get('direction')} (latency:{latency:.0f}ms)")
-                    print(f"[FOLLOWER WS] 📈 Total received: {self.stats['signals_received']}")
+                    # ⚡ Compact log สำหรับ burst signals
+                    print(f"[FOLLOWER WS] ⚡ #{self.stats['signals_received']}: {data.get('asset')} {data.get('direction')} ({latency:.0f}ms)")
                     
                     # Execute callback
                     if self.on_signal_callback:
