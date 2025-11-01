@@ -50,21 +50,34 @@ class FollowerWebSocketClient:
             
             print(f"[FOLLOWER WS] 🔔 Waking server via {health_url}...")
             async with aiohttp.ClientSession() as session:
-                async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                # ⚡ เพิ่ม timeout เป็น 60s สำหรับ cold start
+                async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         print(f"[FOLLOWER WS] ✅ Server is awake - {data.get('followers', 0)} followers online")
                         return True
+                    else:
+                        print(f"[FOLLOWER WS] ⚠️ Server responded with status {resp.status}")
+                        return False
+        except asyncio.TimeoutError:
+            print(f"[FOLLOWER WS] ⏰ Wake timeout - server may still be starting...")
+            return False
         except Exception as e:
-            print(f"[FOLLOWER WS] ⚠️ Wake attempt failed (server may be starting...): {e}")
+            print(f"[FOLLOWER WS] ⚠️ Wake error: {e}")
         return False
     
     async def connect(self):
         """เชื่อมต่อไปยัง WebSocket server"""
         # ลอง wake server ก่อน (สำหรับ Render cold start)
         if 'render.com' in self.server_url:
-            await self.wake_server()
-            await asyncio.sleep(2)  # รอ server boot
+            print(f"[FOLLOWER WS] 💤 Server may be sleeping, waking up...")
+            wake_success = await self.wake_server()
+            if wake_success:
+                print(f"[FOLLOWER WS] ⏳ Waiting 10s for server to fully start...")
+                await asyncio.sleep(10)  # เพิ่มเป็น 10s เพื่อให้ server boot เสร็จ
+            else:
+                print(f"[FOLLOWER WS] ⏳ Server starting (cold start may take 30-60s)...")
+                await asyncio.sleep(15)  # รอนานขึ้นถ้า wake ไม่สำเร็จ
         
         try:
             print(f"[FOLLOWER WS] 🔗 Connecting to {self.server_url}...")
