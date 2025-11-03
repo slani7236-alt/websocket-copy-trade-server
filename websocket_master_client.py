@@ -262,7 +262,7 @@ class MasterWebSocketClient:
                 self.loop
             )
             try:
-                return future.result(timeout=2)
+                return future.result(timeout=5)
             except Exception as e:
                 print(f"[MASTER WS] ❌ Sync send error: {e}")
                 return False
@@ -276,3 +276,4 @@ class MasterWebSocketClient:
                 self.websocket.close(),
                 self.loop
             )
+
