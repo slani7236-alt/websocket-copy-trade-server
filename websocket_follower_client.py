@@ -116,59 +116,70 @@ class FollowerWebSocketClient:
             return False
     
     async def listen_for_signals(self):
-        """รับฟังสัญญาณจาก server"""
+        """รับฟังสัญญาณจาก server และตอบ pong อัตโนมัติ"""
         print(f"[FOLLOWER WS] 👂 Started listening for signals...")
         try:
+            # 🔥 FIX: ใช้ async for เพื่อรับ messages อย่างต่อเนื่อง
+            # websockets library จะตอบ pong อัตโนมัติเมื่อได้รับ ping จาก server
             async for message in self.websocket:
-                data = json.loads(message)
-                msg_type = data.get('type')
-                
-                if msg_type == 'signal':
-                    # ได้รับสัญญาณใหม่!
-                    receive_time = time.time()
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get('type')
                     
-                    # คำนวณ latency
-                    master_time = data.get('master_timestamp', receive_time)
-                    latency = (receive_time - master_time) * 1000  # ms
-                    self.latencies.append(latency)
-                    if len(self.latencies) > 100:
-                        self.latencies = self.latencies[-100:]
-                    self.stats['avg_latency'] = sum(self.latencies) / len(self.latencies)
-                    
-                    self.stats['signals_received'] += 1
-                    
-                    # ⚡ ULTRA FAST: Minimal log
-                    print(f"[⚡] #{self.stats['signals_received']}: {data.get('asset')} {data.get('direction')}")
-                    
-                    # Execute callback
-                    if self.on_signal_callback:
-                        try:
-                            success = self.on_signal_callback(data)
-                            if success:
-                                self.stats['signals_executed'] += 1
-                            else:
+                    if msg_type == 'signal':
+                        # ได้รับสัญญาณใหม่!
+                        receive_time = time.time()
+                        
+                        # คำนวณ latency
+                        master_time = data.get('master_timestamp', receive_time)
+                        latency = (receive_time - master_time) * 1000  # ms
+                        self.latencies.append(latency)
+                        if len(self.latencies) > 100:
+                            self.latencies = self.latencies[-100:]
+                        self.stats['avg_latency'] = sum(self.latencies) / len(self.latencies)
+                        
+                        self.stats['signals_received'] += 1
+                        
+                        # ⚡ ULTRA FAST: Minimal log
+                        print(f"[⚡] #{self.stats['signals_received']}: {data.get('asset')} {data.get('direction')}")
+                        
+                        # Execute callback
+                        if self.on_signal_callback:
+                            try:
+                                success = self.on_signal_callback(data)
+                                if success:
+                                    self.stats['signals_executed'] += 1
+                                else:
+                                    self.stats['signals_failed'] += 1
+                            except Exception as e:
                                 self.stats['signals_failed'] += 1
-                        except Exception as e:
-                            self.stats['signals_failed'] += 1
-                            print(f"[FOLLOWER WS] ❌ Callback exception: {e}")
-                            import traceback
-                            traceback.print_exc()
+                                print(f"[FOLLOWER WS] ❌ Callback exception: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print(f"[FOLLOWER WS] ⚠️ WARNING: No callback registered!")
+                    
+                    elif msg_type == 'pong':
+                        # Pong response - silent
+                        pass
+                    
+                    elif msg_type == 'stats':
+                        # Server stats
+                        print(f"[FOLLOWER WS] 📊 Server stats: {data.get('data')}")
+                    
                     else:
-                        print(f"[FOLLOWER WS] ⚠️ WARNING: No callback registered!")
-                
-                elif msg_type == 'pong':
-                    # Pong response - silent
+                        # Unknown message - อาจเป็น control frames
+                        pass
+                        
+                except json.JSONDecodeError:
+                    # ไม่ใช่ JSON message - อาจเป็น ping/pong control frames
+                    # websockets library จะจัดการ pong อัตโนมัติ
                     pass
-                
-                elif msg_type == 'stats':
-                    # Server stats
-                    print(f"[FOLLOWER WS] 📊 Server stats: {data.get('data')}")
-                
-                else:
-                    print(f"[FOLLOWER WS] 📩 Unknown message type: {msg_type}")
+                except Exception as msg_error:
+                    print(f"[FOLLOWER WS] ⚠️ Message processing error: {msg_error}")
         
         except websockets.exceptions.ConnectionClosed as e:
-            print(f"[FOLLOWER WS] 🔌 Connection closed: {e}")
+            print(f"[FOLLOWER WS] 💀 Connection closed: {e}")
             self.connected = False
         except Exception as e:
             print(f"[FOLLOWER WS] ❌ Listen error: {e}")
@@ -177,7 +188,7 @@ class FollowerWebSocketClient:
             self.connected = False
     
     async def ping_loop(self):
-        """ส่ง ping เพื่อ keep connection alive"""
+        """ส่ง ping client->server เพื่อ keep connection alive"""
         consecutive_failures = 0
         last_success_time = time.time()
         
@@ -185,9 +196,9 @@ class FollowerWebSocketClient:
             try:
                 if self.connected and self.websocket:
                     try:
-                        # ไม่ตรวจสอบ closed ก่อน - ปล่อยให้ exception จัดการ
+                        # 🔥 FIX: ส่ง ping client->server เพื่อ keep alive
                         ping_task = self.websocket.ping()
-                        await asyncio.wait_for(ping_task, timeout=10)  # timeout 10s
+                        await asyncio.wait_for(ping_task, timeout=10)
                         
                         consecutive_failures = 0
                         last_success_time = time.time()
@@ -196,12 +207,12 @@ class FollowerWebSocketClient:
                         consecutive_failures += 1
                         print(f"[FOLLOWER WS] ⚠️ Ping timeout ({consecutive_failures}/3)")
                         if consecutive_failures >= 3:
-                            print(f"[FOLLOWER WS] 🔴 Connection appears dead")
+                            print(f"[FOLLOWER WS] 🔴 Connection appears dead (ping timeout)")
                             self.connected = False
                             consecutive_failures = 0
                     
                     except websockets.exceptions.ConnectionClosed:
-                        print(f"[FOLLOWER WS] 🔌 Connection closed during ping")
+                        print(f"[FOLLOWER WS] � Connection closed during ping")
                         self.connected = False
                         consecutive_failures = 0
                             
@@ -209,17 +220,17 @@ class FollowerWebSocketClient:
                         consecutive_failures += 1
                         print(f"[FOLLOWER WS] ⚠️ Ping error ({consecutive_failures}/3): {e}")
                         if consecutive_failures >= 3:
-                            print(f"[FOLLOWER WS] 🔴 Connection appears dead")
+                            print(f"[FOLLOWER WS] 🔴 Connection appears dead (ping error)")
                             self.connected = False
                             consecutive_failures = 0
                     
-                    # Check no ping success for 90s
+                    # ตรวจสอบว่านานเกิน 90s ไม่ได้ ping สำเร็จ
                     if time.time() - last_success_time > 90:
-                        print(f"[FOLLOWER WS] 🔴 No successful ping for 90s")
+                        print(f"[FOLLOWER WS] 🔴 No successful ping for 90s - reconnecting")
                         self.connected = False
                         consecutive_failures = 0
                         
-                await asyncio.sleep(20)  # Ping ทุก 20 วินาที
+                await asyncio.sleep(15)  # 🔥 Ping ทุก 15 วินาที (เร็วกว่า server ping_interval)
                 
             except Exception as e:
                 print(f"[FOLLOWER WS] ❌ Ping loop error: {e}")
